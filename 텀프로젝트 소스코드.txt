@@ -1,0 +1,155 @@
+//val esConf = Map("es.nodes" -> "220.69.209.54:9481")
+//val df = spark.read.format("org.elasticsearch.spark.sql").options(esConf).load("logstash-term")
+
+//df.printSchema
+//df.createOrReplaceTempView("table")
+
+//val allDF = spark.sql("SELECT geoip,user_agent,os,request,timestamp FROM table GROUP BY geoip, user_agent, os, request, timestamp HAVING geoip.ip IS NOT NULL")
+
+
+import spark.implicits._
+import org.apache.spark.sql.types._
+
+val LogDF = spark.read.json("/eshadoop/term.json")
+LogDF.createOrReplaceTempView("all")
+LogDF.cache()
+
+
+
+val Crawler = spark.sql("SELECT * FROM all a WHERE a.user_agent LIKE '%bingbot%' OR a.user_agent LIKE '%GalaxyBot%' OR a.user_agent LIKE '%GoogleBot%' OR a.user_agent LIKE '%Googlebot-Image%' OR a.user_agent LIKE '%Yeti%' OR a.user_agent LIKE '%kakaotalk%' OR a.user_agent LIKE '%Scrapy%' OR a.user_agent LIKE '%KISA%' OR a.user_agent LIKE '%Knowledge AI%' OR a.user_agent LIKE '%serpstatbot%'")
+val CrawlerDF = Crawler.withColumn("classfication",lit("Search"))
+CrawlerDF.cache()
+CrawlerDF.count()
+
+
+
+val Hacker = spark.sql("SELECT * FROM all a WHERE a.user_agent LIKE '%Baiduspider%' OR a.user_agent LIKE '%MJ12bot%' OR a.user_agent LIKE '%mj12bot%' OR a.user_agent LIKE 'Java%' OR a.user_agent LIKE '%SemrushBot%' OR a.user_agent LIKE '%DomainCrawler%' OR a.user_agent LIKE '%MegaIndex.ru%' OR a.user_agent LIKE '%AlphaBot%' OR a.user_agent LIKE '%AhrefsBot%' OR a.user_agent LIKE '%DotBot%' OR a.user_agent LIKE '%backlink%' OR a.request LIKE '%wp-%'  OR a.request LIKE '%phpmyadmin%' OR a.request LIKE '%index.php%'")
+val HackDF = Hacker.withColumn("classfication",lit("Hack"))
+HackDF.cache()
+HackDF.count()
+
+
+
+val User = spark.sql("SELECT a.* FROM all a WHERE a.user_agent NOT LIKE '%Baiduspider%' AND a.user_agent NOT LIKE '%MJ12bot%' AND a.user_agent NOT LIKE '%mj12bot%' AND a.user_agent NOT LIKE 'Java%' AND a.user_agent NOT LIKE '%SemrushBot%' AND a.user_agent NOT LIKE '%DomainCrawler%' AND a.user_agent NOT LIKE '%MegaIndex.ru%' AND a.user_agent NOT LIKE '%AlphaBot%' AND a.user_agent NOT LIKE '%AhrefsBot%' AND a.user_agent NOT LIKE '%DotBot%' AND a.user_agent NOT LIKE '%backlink%' AND a.request NOT LIKE '%wp-%' AND a.request NOT LIKE '%phpmyadmin%' AND a.request NOT LIKE '%index.php%' AND a.user_agent NOT LIKE '%bingbot%' AND a.user_agent NOT LIKE '%GalaxyBot%' AND a.user_agent NOT LIKE '%GoogleBot%' AND a.user_agent NOT LIKE '%Googlebot-Image%' AND a.user_agent NOT LIKE '%Yeti%' AND a.user_agent NOT LIKE '%kakaotalk%' AND a.user_agent NOT LIKE '%Scrapy%' AND a.user_agent NOT LIKE '%KISA%' AND a.user_agent NOT LIKE '%Knowledge AI%' AND a.user_agent NOT LIKE '%serpstatbot%'")
+User.createOrReplaceTempView("User")
+val UserDF = User.withColumn("classfication",lit("User"))
+UserDF.cache()
+UserDF.count()
+
+val union_f = UserDF.union(CrawlerDF)
+val union_s = union_f.union(HackDF)
+union_s.cache()
+CrawlerDF.unpersist()
+HackDF.unpersist()
+UserDF.unpersist()
+LogDF.unpersist()
+union_s.count()
+
+
+union_s.createOrReplaceTempView("union")
+
+val urlDF = spark.read.json("/urldata/url-20-05-31.json")
+urlDF.createOrReplaceTempView("url")
+
+urlDF.cache()
+
+val patternKR = spark.sql("SELECT a.*,b.uid,b.postnum,b.postname FROM union a, url b where a.request LIKE CONCAT('%','uid=',b.uid,'%') AND a.geoip.country_code2 LIKE 'KR'")
+val patternORTHER = spark.sql("SELECT a.*,b.uid,b.postnum,b.postname FROM union a, url b where a.request LIKE CONCAT('%','uid=',b.uid,'%') AND a.geoip.country_code2 NOT LIKE 'KR'")
+
+val patternX = patternKR.withColumn("classfication_area",lit("KOREA"))
+val patternY = patternORTHER.withColumn("classfication-_area",lit("ORTHER"))
+
+
+patternX.count()
+patternY.count()
+
+val REALpattern = patternX.unionAll(patternY).distinct
+REALpattern.cache()
+
+REALpattern.show(5)
+
+REALpattern.createOrReplaceTempView("pattern")
+
+spark.udf.register("GetByHour",(s:String) => {
+    val hour = s.split('/')(2).split(':')(1) match {
+        case "00" => "새벽"
+        case "01" => "새벽"
+        case "02" => "새벽"
+        case "03" => "새벽"
+        case "04" => "새벽"
+        case "05" => "새벽"
+        case "06" => "오전"
+        case "07" => "오전"
+        case "08" => "아침"
+        case "09" => "오전"
+        case "10" => "오전"
+        case "11" => "오전"
+        case "12" => "점심"
+        case "13" => "점심"
+        case "14" => "오후"
+        case "15" => "오후"
+        case "16" => "오후"
+        case "17" => "오후"
+        case "18" => "저녁"
+        case "19" => "저녁"
+        case "20" => "오후"
+        case "21" => "오후"
+        case "22" => "야식"
+        case "23" => "야식"
+        case "24" => "새벽"
+    }
+    hour
+})
+
+
+
+val timeSlice = spark.sql("SELECT uid AS contents , count(uid) AS connection_count, classfication, getByHour(timestamp) AS connect_time,classfication_area FROM pattern GROUP BY contents, classfication,connect_time, classfication_area ORDER BY connection_count DESC LIMIT 10")
+
+timeSlice.show(10)
+
+spark.sql("SELECT * FROM union WHERE request LIKE '%wp-%' OR request LIKE '%php%'").count()
+
+
+
+val HackTop10 = spark.sql("SELECT geoip.country_code2, user_agent AS HackAgent, count(user_agent) AS AttackCount FROM union WHERE classfication LIKE 'Hack' GROUP BY user_agent, geoip.country_code2 ORDER BY AttackCount DESC LIMIT 10")
+HackTop10.show(false)
+
+
+
+val UserTop10 = spark.sql("SELECT geoip.country_code2, count(geoip.country_code2) AS connection_count,classfication FROM union WHERE classfication LIKE 'User' GROUP BY geoip.country_code2,classfication ORDER BY connection_count DESC LIMIT 10")
+
+UserTop10.show(false)
+
+%sql SELECT geoip.country_code2, count(geoip.country_code2) AS connection,classfication FROM union WHERE classfication LIKE 'User' GROUP BY geoip.country_code2,classfication ORDER BY connection DESC LIMIT 10
+
+
+
+val ContentsTop10 = spark.sql("SELECT postname AS Contents, postnum, uid, count(postname) AS connection_count FROM pattern GROUP BY postname,postnum,uid ORDER BY connection_count DESC LIMIT 10")
+
+ContentsTop10.show()
+
+
+
+val ContentsClass = spark.sql("SELECT geoip.country_code2 AS Resion, count(geoip.country_code2) AS connection, classfication FROM pattern WHERE uid LIKE '7577' GROUP BY Resion,classfication ORDER BY connection DESC")
+
+ContentsClass.show()
+
+
+
+%sql SELECT geoip.country_code2 AS Resion, count(geoip.country_code2) AS connection_count, classfication FROM pattern WHERE uid LIKE '7577' GROUP BY Resion,classfication ORDER BY connection_count DESC
+
+
+
+val KoreaResionTop10 = spark.sql("SELECT geoip.country_code2 AS Resion, uid, postname AS Contents,postnum, count(geoip.country_code2) AS connection FROM pattern GROUP BY Resion,uid,postnum,Contents ORDER BY connection DESC LIMIT 10")
+
+KoreaResionTop10.show()
+
+
+
+%sql SELECT geoip.country_code2 AS Resion, uid, postname AS Contents,postnum, count(geoip.country_code2) AS connection_count FROM pattern GROUP BY Resion,uid,postnum,Contents ORDER BY connection_count DESC LIMIT 10
+
+import org.elasticsearch.spark.sql._
+
+val Conf = Map("es.nodes" -> "220.69.209.54:9481")
+spark.sql("SELECT * FROM pattern").saveToEs("logstash-termproject",Conf)
+REALpattern.unpersist()
